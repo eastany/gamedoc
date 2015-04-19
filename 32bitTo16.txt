@@ -1,0 +1,49 @@
+真彩色转成高彩色的快速算法
+
+
+为什么要实时转换颜色深度?
+通常, 2D 游戏中的位图, 无论在外存中按什么颜色深度存放, 加栽后都被转换成了需要的颜色深度. 我们不太注意颜色深度转换说需要的时间.
+
+但是, 现在不同了. 云风未来的计划中, 最重要的一项是制作一个超级 2D 引擎. 将支持 Voxel 物体和实时光线处理这样的特性, 而且在光线处理中, 32 级的光线亮度级别也远远不够, 所以, 未来的 2D 游戏的发展趋势应该是采用真彩色, 至少是在内部运算时使用. 在某些场合下, 我们可能需要做 15/16bit 高彩色的输出, 所以有必要找到更快的方法实时处理.
+
+下面, 我们对此做一些探讨, 虽然显卡可以支持 15 或 16 bit 色中的一种, 但这里全部用 16bit 色举例:
+
+先来看看 C 版本:
+
+red=(truecolor>>8)&0xf800;
+green=(truecolor>>5)&0x7e0;
+blue=(truecolor>>3)&0x1f;
+hicolor=red|green|blue;
+这样当然是相当慢的, 所以我们还是要借助汇编. 而汇编能极大的优化它:
+lodsd		;RRRRRRRR GGGGGGGG BBBBBBBB
+shr eax,3		;000RRRRR RRRGGGGG GGGBBBBB
+shl al,2		;000RRRRR RRRGGGGG GBBBBBxx
+shl ax,3		;000RRRRR GGGGGGBBB BBxxxxx
+dec esi
+shr eax,5		;00000000 RRRRRGGG GGGBBBBB
+stosw
+是不是精简了很多? 但不幸的是, 虽然看起来很简洁, 但由于大量使用部分寄存器, 对流水线的冲击很大. 代码几乎把流水线的效率减到了最低. 优化方案很多, 我们可以在一次循环里处理两个点, 分别使用 eax 和 ebx, 然后交错那些代码; 又或者将上面代码的后半部分改为查表, 相信都能提高速度. 但是下面我还想提出另一种方案, 采用 MMX 指令级:
+mm7=F800F800F800F800
+mm6=FC00FC00FC00FC00
+------------------------------
+punpcklbw mm0,[red+edx]
+;mm0=RRRRRRRR 00000000 RRRRRRRR 00000000 RRRRRRRR 00000000 RRRRRRRR 00000000
+punpcklbw mm1,[green+edx]
+;mm1=GGGGGGGG 00000000 GGGGGGGG 00000000 GGGGGGGG 00000000 GGGGGGGG 00000000
+punpcklbw mm2,[blue+edx]
+;mm2=BBBBBBBB 00000000 BBBBBBBB 00000000 BBBBBBBB 00000000 BBBBBBBB 00000000
+pand mm0,mm7
+;mm0=RRRRR000 00000000 RRRRR000 00000000 RRRRR000 00000000 RRRRR000 00000000
+pand mm1,mm6
+;mm1=GGGGGG00 00000000 GGGGGG00 00000000 GGGGGG00 00000000 GGGGGG00 00000000
+psrlw mm2,11
+;mm2=00000000 000BBBBB 00000000 000BBBBB 00000000 000BBBBB 00000000 000BBBBB
+psrlw mm1,5
+;mm1=00000GGG GGG00000 00000GGG GGG00000 00000GGG GGG00000 00000GGG GGG00000
+por mm0,mm2
+por mm0,mm1
+;mm0=RRRRRGGG GGGBBBBB RRRRRGGG GGGBBBBB RRRRRGGG GGGBBBBB RRRRRGGG GGGBBBBB
+movq [dis+edx*2],mm0
+add edx,4
+我们对 MMX 的运用是针对它的并行运算, 直接从 RGB888 格式利用并行处理变成 RGB565 似乎不可能, 但是, 如果我们将 RGB 三个色素分开存放, 就将其变为了可能. 可以同时读入 4 个色素, 并行处理, 然后合并, 这样便在一个循环内处理了 4 个点. 考虑到 CACHE 的效率, 最好不要将 RGB 三块内存分的太开. 我的建议是, 位图的每一行分成三个部分, 即为 Red 段, Green 段 和 Blue 段.
+上面的方法都是可以继续优化的, 本文旨在启发朋友们的灵感, 找出更好的方法.
